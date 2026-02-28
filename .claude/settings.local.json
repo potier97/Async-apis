@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(find src:*)",
+      "Bash(/c/Users/nicol/Documents/bullmq/CLEANUP_SUMMARY.md:*)",
+      "Bash(mv:*)",
+      "Bash(ls:*)",
+      "Bash(netstat:*)",
+      "Bash(pm2 list:*)",
+      "Bash(taskkill:*)",
+      "Bash(lsof:*)",
+      "Bash(powershell:*)"
+    ]
+  }
+}

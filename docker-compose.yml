@@ -1,0 +1,74 @@
+version: '3.9'
+
+services:
+  # Redis service - Message queue backend
+  redis:
+    image: redis:7-alpine
+    container_name: bullmq-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - bullmq_network
+    restart: unless-stopped
+
+  # Application service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bullmq-app
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 3000
+      LOG_LEVEL: info
+      MAX_WORKERS: 4
+      CONCURRENCY: 5
+      JOB_TIMEOUT: 300000
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - bullmq_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Redis Commander for UI management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: bullmq-redis-commander
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:redis_password
+    networks:
+      - bullmq_network
+    restart: unless-stopped
+
+networks:
+  bullmq_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local

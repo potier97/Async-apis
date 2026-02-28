@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+  # Redis only - for local development
+  redis:
+    image: redis:7-alpine
+    container_name: bullmq-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - bullmq_network
+    restart: unless-stopped
+
+  # Redis UI for visualization
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: bullmq-redis-commander
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOSTS: local:redis:6379:0
+    networks:
+      - bullmq_network
+    restart: unless-stopped
+
+networks:
+  bullmq_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local

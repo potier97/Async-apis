@@ -1,0 +1,64 @@
+{
+  "name": "bullmq-project",
+  "version": "1.0.0",
+  "description": "Professional TypeScript project with BullMQ for job queues, observability, and best practices",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "predev:pm2": "pm2 kill",
+    "dev:pm2": "npm run build && pm2 start ecosystem.config.cjs",
+    "pm2:monit": "pm2 monit",
+    "pm2:logs": "pm2 logs",
+    "pm2:stop": "pm2 stop all",
+    "pm2:delete": "pm2 delete all",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:single": "jest --testNamePattern",
+    "lint": "eslint src --fix",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "bullmq",
+    "queues",
+    "redis",
+    "observability",
+    "nodejs",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "bullmq": "^5.8.0",
+    "express": "^4.18.2",
+    "redis": "^4.6.13",
+    "dotenv": "^16.3.1",
+    "pino": "^8.17.2",
+    "pino-pretty": "^10.3.1",
+    "joi": "^17.11.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.6",
+    "@types/express": "^4.17.21",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "tsx": "^4.7.0",
+    "ts-node": "^10.9.2",
+    "nodemon": "^3.0.2",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.11",
+    "ts-jest": "^29.1.1",
+    "supertest": "^6.3.3",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^8.54.0",
+    "pm2": "^6.0.14"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
