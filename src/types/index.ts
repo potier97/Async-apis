@@ -20,9 +20,16 @@ export interface QueueConfig {
 }
 
 /**
+ * Base job data with idempotency support
+ */
+export interface BaseJobData {
+  idempotencyKey?: string;
+}
+
+/**
  * Email job data
  */
-export interface EmailJobData {
+export interface EmailJobData extends BaseJobData {
   email: string;
   subject: string;
   body: string;
@@ -41,7 +48,7 @@ export interface EmailJobResult {
 /**
  * Data processing job data
  */
-export interface DataProcessingJobData {
+export interface DataProcessingJobData extends BaseJobData {
   dataId: string;
   processType: 'type1' | 'type2';
 }
@@ -98,4 +105,16 @@ export interface QueueStatsResponse {
     delayed: number;
     waiting: number;
   }>;
+}
+
+/**
+ * Idempotency record (stored in cache/database)
+ */
+export interface IdempotencyRecord {
+  idempotencyKey: string;
+  jobId: string;
+  jobType: string;
+  result: any;
+  createdAt: Date;
+  expiresAt: Date;
 }

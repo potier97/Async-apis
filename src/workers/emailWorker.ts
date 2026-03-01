@@ -1,10 +1,11 @@
 /**
  * Email worker
- * Processes email sending jobs
+ * Processes email sending jobs with granular error handling
  */
 
 import type { Job } from 'bullmq';
 import logger from '../logger/index.js';
+import { handleJobError, ErrorType, createJobError } from '../utils/errorHandler.js';
 import type {
   EmailJobData,
   EmailJobResult,
@@ -12,27 +13,38 @@ import type {
 } from '../types/index.js';
 
 /**
- * Process email job with full type safety
+ * Process email job with full type safety and granular error handling
  */
 export const emailProcessor: JobProcessor<EmailJobData, EmailJobResult> = async (
   job: Job<EmailJobData>,
 ): Promise<EmailJobResult> => {
-  const { email, subject } = job.data;
+  const { email, subject, idempotencyKey } = job.data;
 
   logger.info(
-    { jobId: job.id, email, subject },
+    { jobId: job.id, email, subject, idempotencyKey },
     'Processing email job',
   );
 
   try {
+    // Validation: Email format
     if (!email.includes('@')) {
-      throw new Error('Invalid email format');
+      throw createJobError(
+        `Invalid email format: ${email}`,
+        ErrorType.PERMANENT,
+      );
     }
-    // throw new Error('Invalid email format');
 
+    // Validation: Subject not empty
+    if (!subject || subject.trim().length === 0) {
+      throw createJobError(
+        'Subject cannot be empty',
+        ErrorType.PERMANENT,
+      );
+    }
 
     logger.debug({ email, subject }, 'Sending email...');
 
+    // Simulate email sending (1 second delay)
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
     const result: EmailJobResult = {
@@ -43,19 +55,26 @@ export const emailProcessor: JobProcessor<EmailJobData, EmailJobResult> = async 
     };
 
     logger.info(
-      { jobId: job.id, result },
+      { jobId: job.id, email, messageId: result.messageId },
       'Email sent successfully',
     );
 
     return result;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const err = error instanceof Error ? error : new Error(String(error));
+
     logger.error(
-      { jobId: job.id, email, error: errorMessage },
+      {
+        jobId: job.id,
+        email,
+        attempt: job.attemptsMade + 1,
+        error: err.message,
+      },
       'Failed to send email',
     );
 
-    throw error;
+    // Use granular error handler for specialized retry logic
+    return handleJobError(job, err);
   }
 };
 

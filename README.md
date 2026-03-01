@@ -128,6 +128,137 @@ curl http://localhost:3000/stats
 }
 ```
 
+### Idempotent Requests (Prevent Duplicates)
+
+Use the `X-Idempotency-Key` header to ensure requests are processed exactly once, even if sent multiple times. This is critical for preventing duplicate work (e.g., multiple emails sent, duplicate charges).
+
+**How It Works:**
+- The idempotency key becomes the `jobId` in Redis
+- Redis prevents duplicate job IDs automatically
+- If 2+ instances receive the same key, only one creates the job
+- Other instances retrieve the existing job from Redis
+
+**Send email with idempotency key:**
+```bash
+curl -X POST http://localhost:3000/jobs/send-email \
+  -H "Content-Type: application/json" \
+  -H "X-Idempotency-Key: order-2024-12345" \
+  -d '{
+    "email": "user@example.com",
+    "subject": "Order Confirmation",
+    "body": "Your order #12345 has been placed"
+  }'
+
+# Response (first time):
+{
+  "success": true,
+  "jobId": "order-2024-12345",
+  "status": "queued"
+}
+```
+
+**Send the exact same request again (with same key):**
+```bash
+curl -X POST http://localhost:3000/jobs/send-email \
+  -H "Content-Type: application/json" \
+  -H "X-Idempotency-Key: order-2024-12345" \
+  -d '{
+    "email": "user@example.com",
+    "subject": "Order Confirmation",
+    "body": "Your order #12345 has been placed"
+  }'
+
+# Response (second time - from Redis):
+{
+  "success": true,
+  "jobId": "order-2024-12345",
+  "status": "cached",
+  "message": "This request was already processed"
+}
+```
+
+**Key Points:**
+- Same `X-Idempotency-Key` = Same result (no duplicates)
+- **Redis is the single source of truth** - no separate cache needed
+- **Scales across multiple instances**: One Redis, all instances share the deduplication logic
+- Works with all job endpoints: `/jobs/send-email`, `/jobs/process-data`
+- If network fails, retry with same key - no duplicate jobs created
+
+**Best Practices:**
+```bash
+# ✅ Good: Unique, consistent keys
+X-Idempotency-Key: user-123-order-456
+X-Idempotency-Key: invoice-2024-03-01-78910
+
+# ❌ Bad: Generic, reused keys
+X-Idempotency-Key: email         # Will collide
+X-Idempotency-Key: test          # Reused for multiple requests
+
+# Generate unique key (bash):
+IDEMPOTENCY_KEY="order-$(date +%s)-$RANDOM"
+curl -X POST ... -H "X-Idempotency-Key: $IDEMPOTENCY_KEY" ...
+```
+
+## Error Handling & Retry Strategy
+
+BullMQ includes intelligent error handling with specialized retry strategies:
+
+### Error Types
+
+1. **Permanent Errors** (no retry): Invalid data, missing required fields
+   - Example: Invalid email format → Fails immediately
+   - Logged: "Permanent error - job will not be retried"
+
+2. **Temporary Errors** (retry): Network issues, server timeouts
+   - Example: Redis connection lost → Retries with exponential backoff (2s, 4s, 8s)
+   - Logged: "Temporary error - will retry with exponential backoff"
+
+3. **Rate Limited** (retry with delay): API rate limit exceeded
+   - Example: Email provider returns 429 Too Many Requests
+   - Retries with longer delay (60+ seconds)
+   - Logged: "Rate limited - will retry with custom delay"
+
+4. **Configuration Errors** (no retry): Missing API keys, bad config
+   - Example: SendGrid API key not configured
+   - Fails immediately
+   - Logged: "Configuration error - job will not be retried"
+
+### Monitoring Failed Jobs
+
+```bash
+# Check queue status (see failed count)
+curl http://localhost:3000/stats
+
+# In response, look for:
+{
+  "send-email": {
+    "waiting": 0,
+    "active": 0,
+    "completed": 15,
+    "failed": 2,      # ← 2 jobs failed after all retries
+    "delayed": 0
+  }
+}
+
+# Check specific job details
+curl http://localhost:3000/jobs/{jobId}
+
+# Shows:
+{
+  "success": true,
+  "jobId": "550e8400-e29b-41d4-a716-446655440000",
+  "state": "failed",
+  "failedReason": "Invalid email format: not-an-email",
+  "attempts": 3       # ← Tried 3 times
+}
+```
+
+### Configuration
+
+Retry behavior is configured in `src/queues/index.ts`:
+- `attempts: 3` - Maximum 3 retry attempts
+- `backoff: { type: 'exponential', delay: 2000 }` - Wait 2s, 4s, 8s between retries
+
 ## Architecture Overview
 
 ```
