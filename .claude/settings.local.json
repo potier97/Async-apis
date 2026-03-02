@@ -10,7 +10,17 @@
       "Bash(pm2 list:*)",
       "Bash(taskkill:*)",
       "Bash(lsof:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(node:*)",
+      "Bash(npm install:*)",
+      "Bash(npm:*)",
+      "Bash(rm:*)",
+      "Bash(pnpm add:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(pnpm remove:*)",
+      "Bash(echo exit: $?:*)",
+      "Bash(pnpm run:*)"
     ]
   }
 }

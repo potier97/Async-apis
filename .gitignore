@@ -19,5 +19,3 @@ coverage/
 *.js.map
 *.d.ts
 .pm2/
-queue/
-workers/

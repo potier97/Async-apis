@@ -1,193 +1,133 @@
-/**
- * API routes
- * Express routes for job submission and monitoring
- */
-
 import type { Router as ExpressRouter, Request, Response } from 'express';
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import { getQueue } from '../queues/index.js';
-import { validateJobPayload } from '../jobs/schemas.js';
-import JOB_TYPES from '../jobs/types.js';
 import logger from '../logger/index.js';
-import type {
-  EmailJobData,
-  DataProcessingJobData,
-  ApiResponse,
-  JobStatusResponse,
-  QueueStatsResponse,
-} from '../types/index.js';
+import { enqueue } from '../queue/client.js';
+import { sendEmailJob } from '../queue/jobs/send-email.js';
+import { processDataJob } from '../queue/jobs/process-data.js';
+import { getOrCreateQueueInstance } from '../queue/queue.js';
+import { emailQueue, dataProcessingQueue } from '../queue/queues/index.js';
+import type { ApiResponse, JobStatusResponse, QueueStatsResponse, QueueStats } from '../types/index.js';
 
 const router: ExpressRouter = Router();
 
 /**
- * POST /jobs/send-email
- * Submit an email job to the queue
- * Supports X-Idempotency-Key header for idempotent operations
- * If key is provided, uses it as jobId for automatic deduplication via Redis
+ * Wraps an async route handler so Express doesn't swallow unhandled rejections.
+ * Solves: @typescript-eslint/no-misused-promises
  */
-router.post('/jobs/send-email', async (req: Request, res: Response): Promise<void> => {
+type AsyncHandler = (req: Request, res: Response) => Promise<void>;
+
+function asyncRoute(handler: AsyncHandler): (req: Request, res: Response) => void {
+  return (req, res) => {
+    handler(req, res).catch((error: unknown) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error({ error: errorMessage }, 'Unhandled route error');
+      res.status(500).json({ success: false, error: errorMessage });
+    });
+  };
+}
+
+/**
+ * Extracts the idempotency key from the request header.
+ * Returns undefined if not present or empty.
+ */
+function getIdempotencyKey(req: Request): string | undefined {
+  const raw = req.get('X-Idempotency-Key');
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * POST /jobs/send-email
+ * Validates with Zod, enqueues via enqueue()
+ * Supports X-Idempotency-Key header for deduplication via Redis
+ */
+router.post('/jobs/send-email', asyncRoute(async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, subject, body } = req.body;
-    const idempotencyKey = (req.get('X-Idempotency-Key') || '').trim();
-
-    const validatedData = validateJobPayload<EmailJobData>(
-      JOB_TYPES.SEND_EMAIL,
-      { email, subject, body, idempotencyKey },
-    );
-
-    const queue = getQueue(JOB_TYPES.SEND_EMAIL);
-    const jobId = idempotencyKey || uuidv4();
-
-    let job = await queue.add(JOB_TYPES.SEND_EMAIL, validatedData, {
-      jobId,
-    }).catch(async (error) => {
-      // If job already exists (duplicate idempotency key), fetch it
-      if (error.message.includes('NOSCRIPT') || jobId === idempotencyKey) {
-        const existingJob = await queue.getJob(jobId);
-        if (existingJob) {
-          logger.info(
-            { jobId, idempotencyKey },
-            'Job with this idempotency key already exists, returning existing job',
-          );
-          return existingJob;
-        }
-      }
-      throw error;
+    const idempotencyKey = getIdempotencyKey(req);
+    const { email, subject, body } = sendEmailJob.parse({
+      ...req.body as Record<string, unknown>,
+      idempotencyKey,
     });
 
-    if (!job) {
-      throw new Error('Failed to create or retrieve job');
-    }
+    const jobId = await enqueue(sendEmailJob, {
+      email,
+      subject,
+      body,
+      idempotencyKey,
+    });
 
-    const state = await job.getState();
-    const status = idempotencyKey && state !== 'waiting'
-      ? 'cached'
-      : 'queued';
-
-    logger.info(
-      { jobId: job.id, email, idempotencyKey, status },
-      'Email job submitted',
-    );
+    logger.info({ jobId, email, idempotencyKey }, 'Email job submitted');
 
     const response: ApiResponse = {
       success: true,
-      jobId: job.id ?? '',
-      status,
-      message: status === 'cached'
-        ? 'This request was already processed'
-        : 'Email job submitted successfully',
+      jobId,
+      status: 'queued',
+      message: 'Email job submitted successfully',
     };
 
-    const statusCode = status === 'cached' ? 200 : 202;
-    res.status(statusCode).json(response);
-    return;
+    res.status(202).json(response);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error({ error: errorMessage }, 'Failed to submit email job');
-
-    res.status(400).json({
-      success: false,
-      error: errorMessage,
-    });
-    return;
+    res.status(400).json({ success: false, error: errorMessage });
   }
-});
+}));
 
 /**
  * POST /jobs/process-data
- * Submit a data processing job to the queue
- * Supports X-Idempotency-Key header for idempotent operations
- * If key is provided, uses it as jobId for automatic deduplication via Redis
+ * Validates with Zod, enqueues via enqueue()
+ * Supports X-Idempotency-Key header for deduplication via Redis
  */
-router.post('/jobs/process-data', async (req: Request, res: Response): Promise<void> => {
+router.post('/jobs/process-data', asyncRoute(async (req: Request, res: Response): Promise<void> => {
   try {
-    const { dataId, processType } = req.body;
-    const idempotencyKey = (req.get('X-Idempotency-Key') || '').trim();
-
-    const validatedData = validateJobPayload<DataProcessingJobData>(
-      JOB_TYPES.PROCESS_DATA,
-      { dataId, processType, idempotencyKey },
-    );
-
-    const queue = getQueue(JOB_TYPES.PROCESS_DATA);
-    const jobId = idempotencyKey || uuidv4();
-
-    let job = await queue.add(JOB_TYPES.PROCESS_DATA, validatedData, {
-      jobId,
-    }).catch(async (error) => {
-      // If job already exists (duplicate idempotency key), fetch it
-      if (error.message.includes('NOSCRIPT') || jobId === idempotencyKey) {
-        const existingJob = await queue.getJob(jobId);
-        if (existingJob) {
-          logger.info(
-            { jobId, idempotencyKey },
-            'Job with this idempotency key already exists, returning existing job',
-          );
-          return existingJob;
-        }
-      }
-      throw error;
+    const idempotencyKey = getIdempotencyKey(req);
+    const { dataId, processType } = processDataJob.parse({
+      ...req.body as Record<string, unknown>,
+      idempotencyKey,
     });
 
-    if (!job) {
-      throw new Error('Failed to create or retrieve job');
-    }
+    const jobId = await enqueue(processDataJob, {
+      dataId,
+      processType,
+      idempotencyKey,
+    });
 
-    const state = await job.getState();
-    const status = idempotencyKey && state !== 'waiting'
-      ? 'cached'
-      : 'queued';
-
-    logger.info(
-      { jobId: job.id, dataId, idempotencyKey, status },
-      'Data processing job submitted',
-    );
+    logger.info({ jobId, dataId, idempotencyKey }, 'Data processing job submitted');
 
     const response: ApiResponse = {
       success: true,
-      jobId: job.id ?? '',
-      status,
-      message: status === 'cached'
-        ? 'This request was already processed'
-        : 'Data processing job submitted successfully',
+      jobId,
+      status: 'queued',
+      message: 'Data processing job submitted successfully',
     };
 
-    const statusCode = status === 'cached' ? 200 : 202;
-    res.status(statusCode).json(response);
-    return;
+    res.status(202).json(response);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error({ error: errorMessage }, 'Failed to submit data processing job');
-
-    res.status(400).json({
-      success: false,
-      error: errorMessage,
-    });
-    return;
+    res.status(400).json({ success: false, error: errorMessage });
   }
-});
+}));
 
 /**
  * GET /jobs/:jobId
- * Get job status and details
+ * Search across all queues to find a job by ID
  */
-router.get('/jobs/:jobId', async (req: Request, res: Response): Promise<void> => {
+router.get('/jobs/:jobId', asyncRoute(async (req: Request, res: Response): Promise<void> => {
   try {
     const { jobId } = req.params;
+    const queues = [emailQueue, dataProcessingQueue];
 
     let job = null;
-    for (const jobType of Object.values(JOB_TYPES)) {
-      const queue = getQueue(jobType);
+    for (const queueDef of queues) {
+      const queue = getOrCreateQueueInstance(queueDef.name);
       job = await queue.getJob(jobId);
       if (job) break;
     }
 
     if (!job) {
-      res.status(404).json({
-        success: false,
-        error: 'Job not found',
-      });
+      res.status(404).json({ success: false, error: 'Job not found' });
       return;
     }
 
@@ -198,8 +138,8 @@ router.get('/jobs/:jobId', async (req: Request, res: Response): Promise<void> =>
       jobId: job.id ?? '',
       state,
       progress: 0,
-      data: job.data,
-      result: job.returnvalue,
+      data: job.data as Record<string, unknown>,
+      result: job.returnvalue as Record<string, unknown> | null,
       failedReason: job.failedReason,
       attempts: job.attemptsMade,
     };
@@ -208,17 +148,12 @@ router.get('/jobs/:jobId', async (req: Request, res: Response): Promise<void> =>
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error({ error: errorMessage }, 'Failed to get job status');
-
-    res.status(500).json({
-      success: false,
-      error: errorMessage,
-    });
+    res.status(500).json({ success: false, error: errorMessage });
   }
-});
+}));
 
 /**
  * GET /health
- * Health check endpoint
  */
 router.get('/health', (_req: Request, res: Response): void => {
   res.json({
@@ -230,17 +165,18 @@ router.get('/health', (_req: Request, res: Response): void => {
 
 /**
  * GET /stats
- * Get queue statistics and metrics
+ * Queue statistics across all queues
  */
-router.get('/stats', async (_req: Request, res: Response): Promise<void> => {
+router.get('/stats', asyncRoute(async (_req: Request, res: Response): Promise<void> => {
   try {
-    const stats: Record<string, any> = {};
+    const queues = [emailQueue, dataProcessingQueue];
+    const stats: Record<string, QueueStats> = {};
 
-    for (const jobType of Object.values(JOB_TYPES)) {
-      const queue = getQueue(jobType);
+    for (const queueDef of queues) {
+      const queue = getOrCreateQueueInstance(queueDef.name);
       const counts = await queue.getJobCounts();
 
-      stats[jobType] = {
+      stats[queueDef.name] = {
         active: counts.active || 0,
         completed: counts.completed || 0,
         failed: counts.failed || 0,
@@ -259,12 +195,8 @@ router.get('/stats', async (_req: Request, res: Response): Promise<void> => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error({ error: errorMessage }, 'Failed to get queue stats');
-
-    res.status(500).json({
-      success: false,
-      error: errorMessage,
-    });
+    res.status(500).json({ success: false, error: errorMessage });
   }
-});
+}));
 
 export default router;

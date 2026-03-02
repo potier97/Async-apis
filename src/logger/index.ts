@@ -3,14 +3,18 @@
  * Sets up Pino logger with appropriate levels and transports
  */
 
-import pino from 'pino';
+import pino, { type Logger } from 'pino';
 import config from '../config/index.js';
 
-const createLogger = () => {
-  const isDevelopment = config.isDevelopment;
+const createLogger = (): Logger => {
+  const loggerOptions: pino.LoggerOptions = {
+    level: config.logLevel || 'info',
+    timestamp: pino.stdTimeFunctions.isoTime,
+  };
 
-  if (isDevelopment) {
-    const transport = pino.transport({
+  if (config.isDevelopment) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- pino.transport() returns ThreadStream typed as `any` in @types/pino
+    const transport = pino.transport<Record<string, boolean | string>>({
       target: 'pino-pretty',
       options: {
         colorize: true,
@@ -19,23 +23,10 @@ const createLogger = () => {
       },
     });
 
-    const logger = pino(
-      {
-        level: config.logLevel || 'info',
-        timestamp: pino.stdTimeFunctions.isoTime,
-      },
-      transport,
-    );
-
-    return logger;
+    return pino(loggerOptions, transport);
   }
 
-  const logger = pino({
-    level: config.logLevel || 'info',
-    timestamp: pino.stdTimeFunctions.isoTime,
-  });
-
-  return logger;
+  return pino(loggerOptions);
 };
 
 export const logger = createLogger();
